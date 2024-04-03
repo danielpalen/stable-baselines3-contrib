@@ -88,7 +88,7 @@ class CrossQ(OffPolicyAlgorithm):
     policy: CrossQPolicy
     actor: Actor
     critic: ContinuousCritic
-    critic_target: ContinuousCritic  # TODO: This can go completely
+    # critic_target: ContinuousCritic  # TODO: This can go completely
 
     def __init__(
         self,
@@ -99,7 +99,7 @@ class CrossQ(OffPolicyAlgorithm):
         buffer_size: int = 1_000_000,  # 1e6
         learning_starts: int = 100,
         batch_size: int = 256,
-        tau: float = 0.005,  # TODO:
+        tau: float = 1.,  # TODO:
         gamma: float = 0.99,
         train_freq: Union[int, Tuple[int, str]] = 1,
         gradient_steps: int = 1,
@@ -165,7 +165,7 @@ class CrossQ(OffPolicyAlgorithm):
         self._create_aliases()
         # Running mean and running var
         self.batch_norm_stats = get_parameters_by_name(self.critic, ["running_"])
-        self.batch_norm_stats_target = get_parameters_by_name(self.critic_target, ["running_"])
+        # self.batch_norm_stats_target = get_parameters_by_name(self.critic_target, ["running_"])
         # Target entropy is used when learning the entropy coefficient
         if self.target_entropy == "auto":
             # automatically set target entropy if needed
@@ -198,11 +198,11 @@ class CrossQ(OffPolicyAlgorithm):
     def _create_aliases(self) -> None:
         self.actor = self.policy.actor
         self.critic = self.policy.critic
-        self.critic_target = self.policy.critic_target
+        # self.critic_target = self.policy.critic_target
 
     def train(self, gradient_steps: int, batch_size: int = 64) -> None:
         # Switch to train mode (this affects batch norm / dropout)
-        # self.policy.set_training_mode(True)
+        self.policy.set_training_mode(True)
         # Update optimizers learning rate
         optimizers = [self.actor.optimizer, self.critic.optimizer]
         if self.ent_coef_optimizer is not None:
@@ -222,10 +222,12 @@ class CrossQ(OffPolicyAlgorithm):
             if self.use_sde:
                 self.actor.reset_noise()
 
-            with th.no_grad():
-                self.actor.eval()
-                actions, log_prob = self.actor.action_log_prob(replay_data.observations, eval_mode=True)
-                self.actor.eval()
+            # with th.no_grad():
+            self.actor.set_training_mode(True)
+            actions_pi, log_prob = self.actor.action_log_prob(replay_data.observations)
+            log_prob = log_prob.reshape(-1, 1)
+            self.actor.set_training_mode(False)
+            # actions, _ = self.actor.action_log_prob(replay_data.observations)
 
             ent_coef_loss = None
             if self.ent_coef_optimizer is not None and self.log_ent_coef is not None:
@@ -249,19 +251,19 @@ class CrossQ(OffPolicyAlgorithm):
 
             with th.no_grad():
                 # Select action according to policy
-                # actions, _ = self.actor.action_log_prob(replay_data.observations, eval_mode=True)
-                self.actor.eval()
-                next_actions, next_log_prob = self.actor.action_log_prob(replay_data.next_observations, eval_mode=True)
-                self.actor.eval()
+                # actions, _ = self.actor.action_log_prob(replay_data.observations)
+                self.actor.set_training_mode(False)
+                next_actions, next_log_prob = self.actor.action_log_prob(replay_data.next_observations)
+                self.actor.set_training_mode(False)
 
-                # Joint forward pass
-                # TODO: dokumentation
-                all_obs = th.cat([replay_data.observations, replay_data.next_observations], dim=0)
-                all_acts = th.cat([actions, next_actions], dim=0)  # TODO: check the detach() here.
+            # Joint forward pass
+            # TODO: dokumentation
+            all_obs = th.cat([replay_data.observations, replay_data.next_observations], dim=0)
+            all_acts = th.cat([replay_data.actions, next_actions], dim=0)  # TODO: check the detach() here.
 
-            self.critic.train()
-            all_q_values = th.cat(self.critic(all_obs, all_acts, eval_mode=False), dim=1)
-            self.critic.eval()
+            self.critic.set_training_mode(True)
+            all_q_values = th.cat(self.critic(all_obs, all_acts), dim=1)
+            self.critic.set_training_mode(False)
             current_q_values, next_q_values = th.split(all_q_values, batch_size, dim=0)
             current_q_values = th.split(current_q_values, [1,1], dim=1)
 
@@ -293,14 +295,14 @@ class CrossQ(OffPolicyAlgorithm):
             
             # Action by the current actor for the sampled state
             # TODO: shouldnt this be detached?
-            self.actor.train()
-            actions_pi, log_prob = self.actor.action_log_prob(replay_data.observations, eval_mode=False)
-            self.actor.eval()
+            # self.actor.set_training_mode(True)
+            # actions_pi, log_prob = self.actor.action_log_prob(replay_data.observations)
+            # self.actor.set_training_mode(False)
             log_prob = log_prob.reshape(-1, 1)
 
-            self.critic.eval()
-            q_values_pi = th.cat(self.critic(replay_data.observations, actions_pi, eval_mode=True), dim=1)
-            self.critic.eval()
+            self.critic.set_training_mode(False)
+            q_values_pi = th.cat(self.critic(replay_data.observations, actions_pi), dim=1)
+            self.critic.set_training_mode(False)
 
             min_qf_pi, _ = th.min(q_values_pi, dim=1, keepdim=True)
             actor_loss = (ent_coef * log_prob - min_qf_pi).mean()
@@ -345,7 +347,7 @@ class CrossQ(OffPolicyAlgorithm):
         )
 
     def _excluded_save_params(self) -> List[str]:
-        return super()._excluded_save_params() + ["actor", "critic", "critic_target"]  # noqa: RUF005
+        return super()._excluded_save_params() + ["actor", "critic"]#, "critic_target"]  # noqa: RUF005
 
     def _get_torch_save_params(self) -> Tuple[List[str], List[str]]:
         state_dicts = ["policy", "actor.optimizer", "critic.optimizer"]

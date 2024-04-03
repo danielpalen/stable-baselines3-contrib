@@ -22,17 +22,17 @@ with wandb.init(
     entity='ias', # TODO: remove for publication
     project='sb3-contrib-crossq',
     name=f"seed={seed}",
-    # group=f"{env}_BN",
-    group=f"{env}_SAC",
+    group=f"{env}_BN_fix",
+    # group=f"{env}_SAC",
     tags=[],
     sync_tensorboard=True,
     # config=args_dict,
     settings=wandb.Settings(start_method="fork") if is_slurm_job() else None,
-    # mode='disabled',
+    mode='online' if is_slurm_job() else 'disabled',
 ) as wandb_run:
     
-    # model = CrossQ(
-    model = SAC(
+    model = CrossQ(
+    # model = SAC(
         "MlpPolicy", 
         env, 
         learning_starts=5_000,
@@ -40,5 +40,5 @@ with wandb.init(
         tensorboard_log=f"logs/{env}",
         verbose=1
     )
-    model.learn(total_timesteps=1_000_000, log_interval=200)
+    model.learn(total_timesteps=1_000_000, log_interval=10)
     # model.save("crossq_walker")

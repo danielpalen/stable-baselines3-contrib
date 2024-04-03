@@ -92,9 +92,9 @@ class Actor(BasePolicy):
             tmp = []
             for layer in latent_pi_net:
                 if isinstance(layer, nn.Linear):
-                    tmp.append(nn.BatchNorm1d(layer.in_features, eps=1e-3, momentum=0.01))
+                    tmp.append(nn.BatchNorm1d(layer.in_features, eps=0.001, momentum=0.01))
                 tmp.append(layer)
-            tmp.append(nn.BatchNorm1d(net_arch[-1], eps=1e-3, momentum=0.01))
+            tmp.append(nn.BatchNorm1d(net_arch[-1], eps=0.001, momentum=0.01))
             latent_pi_net = tmp
 
         self.latent_pi = nn.Sequential(*latent_pi_net)
@@ -158,7 +158,7 @@ class Actor(BasePolicy):
         assert isinstance(self.action_dist, StateDependentNoiseDistribution), msg
         self.action_dist.sample_weights(self.log_std, batch_size=batch_size)
 
-    def get_action_dist_params(self, obs: PyTorchObs, eval_mode=True) -> Tuple[th.Tensor, th.Tensor, Dict[str, th.Tensor]]:
+    def get_action_dist_params(self, obs: PyTorchObs) -> Tuple[th.Tensor, th.Tensor, Dict[str, th.Tensor]]:
         """
         Get the parameters for the action distribution.
 
@@ -166,7 +166,6 @@ class Actor(BasePolicy):
         :return:
             Mean, standard deviation and optional keyword arguments.
         """
-        # self.set_training_mode(not eval_mode)  # TODO: descibe
         features = self.extract_features(obs, self.features_extractor)
         latent_pi = self.latent_pi(features)
         mean_actions = self.mu(latent_pi)
@@ -179,14 +178,13 @@ class Actor(BasePolicy):
         log_std = th.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX)
         return mean_actions, log_std, {}
 
-    def forward(self, obs: PyTorchObs, deterministic: bool = False, eval_mode=True) -> th.Tensor:
+    def forward(self, obs: PyTorchObs, deterministic: bool = False) -> th.Tensor:
         mean_actions, log_std, kwargs = self.get_action_dist_params(obs)
         # Note: the action is squashed
-        # self.set_training_mode(not eval_mode)  # TODO: describe
         return self.action_dist.actions_from_params(mean_actions, log_std, deterministic=deterministic, **kwargs)
 
-    def action_log_prob(self, obs: PyTorchObs, eval_mode=True) -> Tuple[th.Tensor, th.Tensor]:
-        mean_actions, log_std, kwargs = self.get_action_dist_params(obs, eval_mode=True)
+    def action_log_prob(self, obs: PyTorchObs) -> Tuple[th.Tensor, th.Tensor]:
+        mean_actions, log_std, kwargs = self.get_action_dist_params(obs)
         # return action and associated log prob
         return self.action_dist.log_prob_from_params(mean_actions, log_std, **kwargs)
 
@@ -257,7 +255,7 @@ class CrossQCritic(BaseModel):
                 tmp = []
                 for layer in q_net_list:
                     if isinstance(layer, nn.Linear):
-                        tmp.append(nn.BatchNorm1d(layer.in_features, eps=1e-3, momentum=0.01))
+                        tmp.append(nn.BatchNorm1d(layer.in_features, eps=0.001, momentum=0.01))
                     tmp.append(layer)
                 q_net_list = tmp
 
@@ -265,10 +263,9 @@ class CrossQCritic(BaseModel):
             self.add_module(f"qf{idx}", q_net)
             self.q_networks.append(q_net)
 
-    def forward(self, obs: th.Tensor, actions: th.Tensor, eval_mode=True) -> Tuple[th.Tensor, ...]:
+    def forward(self, obs: th.Tensor, actions: th.Tensor) -> Tuple[th.Tensor, ...]:
         # Learn the features extractor using the policy loss only
         # when the features_extractor is shared with the actor
-        # self.set_training_mode(not eval_mode)  # TODO: describe this
         with th.set_grad_enabled(not self.share_features_extractor):
             features = self.extract_features(obs, self.features_extractor)
         qvalue_input = th.cat([features, actions], dim=1)
@@ -318,7 +315,7 @@ class CrossQPolicy(BasePolicy):
 
     actor: Actor
     critic: CrossQCritic
-    critic_target: CrossQCritic
+    # critic_target: CrossQCritic
 
     def __init__(
         self,
@@ -383,6 +380,7 @@ class CrossQPolicy(BasePolicy):
                 "n_critics": n_critics,
                 "net_arch": critic_arch,
                 "share_features_extractor": share_features_extractor,
+                "batch_norm": True, # TODO:
             }
         )
 
@@ -409,9 +407,9 @@ class CrossQPolicy(BasePolicy):
             self.critic = self.make_critic(features_extractor=None)
             critic_parameters = list(self.critic.parameters())
 
-        # Critic target should not share the features extractor with critic
-        self.critic_target = self.make_critic(features_extractor=None)
-        self.critic_target.load_state_dict(self.critic.state_dict())
+        # # Critic target should not share the features extractor with critic
+        # self.critic_target = self.make_critic(features_extractor=None)
+        # self.critic_target.load_state_dict(self.critic.state_dict())
 
         self.critic.optimizer = self.optimizer_class(
             critic_parameters,
@@ -419,8 +417,8 @@ class CrossQPolicy(BasePolicy):
             **self.optimizer_kwargs,
         )
 
-        # Target networks should always be in eval mode
-        self.critic_target.set_training_mode(False)
+        # # Target networks should always be in eval mode
+        # self.critic_target.set_training_mode(False)
 
     def _get_constructor_parameters(self) -> Dict[str, Any]:
         data = super()._get_constructor_parameters()
