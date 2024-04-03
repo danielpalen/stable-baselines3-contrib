@@ -11,17 +11,18 @@ from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
 from stable_baselines3.common.policies import BasePolicy, ContinuousCritic
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import get_parameters_by_name, polyak_update
+
 # from stable_baselines3.sac.policies import Actor, CnnPolicy, MlpPolicy, MultiInputPolicy, SACPolicy
-from sb3_contrib.crossq.policies import Actor, MlpPolicy, CrossQPolicy
 
-SelfCrossQ = TypeVar("SelfCrossQ", bound="CrossQ")
+from sb3_contrib.sac.policies import Actor, CnnPolicy, MlpPolicy, MultiInputPolicy, SACPolicy
 
 
-class CrossQ(OffPolicyAlgorithm):
+SelfSAC = TypeVar("SelfSAC", bound="SAC")
+
+
+class SAC(OffPolicyAlgorithm):
     """
-    CrossQ - 
-
-    TODO: Add description
+    Soft Actor-Critic (SAC)
     Off-Policy Maximum Entropy Deep Reinforcement Learning with a Stochastic Actor,
     This implementation borrows code from original implementation (https://github.com/haarnoja/sac)
     from OpenAI Spinning Up (https://github.com/openai/spinningup), from the softlearning repo
@@ -82,24 +83,23 @@ class CrossQ(OffPolicyAlgorithm):
 
     policy_aliases: ClassVar[Dict[str, Type[BasePolicy]]] = {
         "MlpPolicy": MlpPolicy,
-        # "CnnPolicy": CnnPolicy,
-        # "MultiInputPolicy": MultiInputPolicy,
+        "CnnPolicy": CnnPolicy,
+        "MultiInputPolicy": MultiInputPolicy,
     }
-    policy: CrossQPolicy
+    policy: SACPolicy
     actor: Actor
     critic: ContinuousCritic
-    critic_target: ContinuousCritic  # TODO: This can go completely
+    critic_target: ContinuousCritic
 
     def __init__(
         self,
-        policy: Union[str, Type[CrossQPolicy]],
+        policy: Union[str, Type[SACPolicy]],
         env: Union[GymEnv, str],
-        # learning_rate: Union[float, Schedule] = 3e-4,
-        learning_rate: Union[float, Schedule] = 1e-3,
+        learning_rate: Union[float, Schedule] = 3e-4,
         buffer_size: int = 1_000_000,  # 1e6
         learning_starts: int = 100,
         batch_size: int = 256,
-        tau: float = 0.005,  # TODO:
+        tau: float = 0.005,
         gamma: float = 0.99,
         train_freq: Union[int, Tuple[int, str]] = 1,
         gradient_steps: int = 1,
@@ -202,7 +202,7 @@ class CrossQ(OffPolicyAlgorithm):
 
     def train(self, gradient_steps: int, batch_size: int = 64) -> None:
         # Switch to train mode (this affects batch norm / dropout)
-        # self.policy.set_training_mode(True)
+        self.policy.set_training_mode(True)
         # Update optimizers learning rate
         optimizers = [self.actor.optimizer, self.critic.optimizer]
         if self.ent_coef_optimizer is not None:
@@ -222,10 +222,9 @@ class CrossQ(OffPolicyAlgorithm):
             if self.use_sde:
                 self.actor.reset_noise()
 
-            with th.no_grad():
-                self.actor.eval()
-                actions, log_prob = self.actor.action_log_prob(replay_data.observations, eval_mode=True)
-                self.actor.eval()
+            # Action by the current actor for the sampled state
+            actions_pi, log_prob = self.actor.action_log_prob(replay_data.observations)
+            log_prob = log_prob.reshape(-1, 1)
 
             ent_coef_loss = None
             if self.ent_coef_optimizer is not None and self.log_ent_coef is not None:
@@ -249,34 +248,21 @@ class CrossQ(OffPolicyAlgorithm):
 
             with th.no_grad():
                 # Select action according to policy
-                # actions, _ = self.actor.action_log_prob(replay_data.observations, eval_mode=True)
-                self.actor.eval()
-                next_actions, next_log_prob = self.actor.action_log_prob(replay_data.next_observations, eval_mode=True)
-                self.actor.eval()
-
-                # Joint forward pass
-                # TODO: dokumentation
-                all_obs = th.cat([replay_data.observations, replay_data.next_observations], dim=0)
-                all_acts = th.cat([actions, next_actions], dim=0)  # TODO: check the detach() here.
-
-            self.critic.train()
-            all_q_values = th.cat(self.critic(all_obs, all_acts, eval_mode=False), dim=1)
-            self.critic.eval()
-            current_q_values, next_q_values = th.split(all_q_values, batch_size, dim=0)
-            current_q_values = th.split(current_q_values, [1,1], dim=1)
-
-            with th.no_grad():
-                # Compute the target Q value
-                next_q_values = next_q_values.detach()
+                next_actions, next_log_prob = self.actor.action_log_prob(replay_data.next_observations)
+                # Compute the next Q values: min over all critics targets
+                next_q_values = th.cat(self.critic_target(replay_data.next_observations, next_actions), dim=1)
                 next_q_values, _ = th.min(next_q_values, dim=1, keepdim=True)
-
                 # add entropy term
                 next_q_values = next_q_values - ent_coef * next_log_prob.reshape(-1, 1)
                 # td error + entropy term
                 target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
 
+            # Get current Q-values estimates for each critic network
+            # using action from the replay buffer
+            current_q_values = self.critic(replay_data.observations, replay_data.actions)
+
             # Compute critic loss
-            critic_loss = 0.5 * sum(F.mse_loss(current_q, target_q_values.detach()) for current_q in current_q_values)
+            critic_loss = 0.5 * sum(F.mse_loss(current_q, target_q_values) for current_q in current_q_values)
             assert isinstance(critic_loss, th.Tensor)  # for type checker
             critic_losses.append(critic_loss.item())  # type: ignore[union-attr]
 
@@ -288,20 +274,7 @@ class CrossQ(OffPolicyAlgorithm):
             # Compute actor loss
             # Alternative: actor_loss = th.mean(log_prob - qf1_pi)
             # Min over all critic networks
-            # self.actor.set_training_mode(True)
-            # self.critic.set_training_mode(False)
-            
-            # Action by the current actor for the sampled state
-            # TODO: shouldnt this be detached?
-            self.actor.train()
-            actions_pi, log_prob = self.actor.action_log_prob(replay_data.observations, eval_mode=False)
-            self.actor.eval()
-            log_prob = log_prob.reshape(-1, 1)
-
-            self.critic.eval()
-            q_values_pi = th.cat(self.critic(replay_data.observations, actions_pi, eval_mode=True), dim=1)
-            self.critic.eval()
-
+            q_values_pi = th.cat(self.critic(replay_data.observations, actions_pi), dim=1)
             min_qf_pi, _ = th.min(q_values_pi, dim=1, keepdim=True)
             actor_loss = (ent_coef * log_prob - min_qf_pi).mean()
             actor_losses.append(actor_loss.item())
@@ -311,11 +284,11 @@ class CrossQ(OffPolicyAlgorithm):
             actor_loss.backward()
             self.actor.optimizer.step()
 
-            # # Update target networks
-            # if gradient_step % self.target_update_interval == 0:
-            #     polyak_update(self.critic.parameters(), self.critic_target.parameters(), self.tau)
-            #     # Copy running stats, see GH issue #996
-            #     polyak_update(self.batch_norm_stats, self.batch_norm_stats_target, 1.0)
+            # Update target networks
+            if gradient_step % self.target_update_interval == 0:
+                polyak_update(self.critic.parameters(), self.critic_target.parameters(), self.tau)
+                # Copy running stats, see GH issue #996
+                polyak_update(self.batch_norm_stats, self.batch_norm_stats_target, 1.0)
 
         self._n_updates += gradient_steps
 
@@ -327,14 +300,14 @@ class CrossQ(OffPolicyAlgorithm):
             self.logger.record("train/ent_coef_loss", np.mean(ent_coef_losses))
 
     def learn(
-        self: SelfCrossQ,
+        self: SelfSAC,
         total_timesteps: int,
         callback: MaybeCallback = None,
         log_interval: int = 4,
-        tb_log_name: str = "CrossQ",
+        tb_log_name: str = "SAC",
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
-    ) -> SelfCrossQ:
+    ) -> SelfSAC:
         return super().learn(
             total_timesteps=total_timesteps,
             callback=callback,

@@ -2,7 +2,7 @@ import argparse
 import os
 import wandb
 
-from sb3_contrib import CrossQ
+from sb3_contrib import CrossQ, SAC
 
 
 
@@ -22,15 +22,17 @@ with wandb.init(
     entity='ias', # TODO: remove for publication
     project='sb3-contrib-crossq',
     name=f"seed={seed}",
-    group=f"{env}_BN",
+    # group=f"{env}_BN",
+    group=f"{env}_SAC",
     tags=[],
     sync_tensorboard=True,
     # config=args_dict,
     settings=wandb.Settings(start_method="fork") if is_slurm_job() else None,
-    # mode=args.wandb_mode
+    # mode='disabled',
 ) as wandb_run:
     
-    model = CrossQ(
+    # model = CrossQ(
+    model = SAC(
         "MlpPolicy", 
         env, 
         learning_starts=5_000,
