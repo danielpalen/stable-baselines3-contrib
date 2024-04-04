@@ -16,6 +16,7 @@ from stable_baselines3.common.torch_layers import (
     get_actor_critic_arch,
 )
 from stable_baselines3.common.type_aliases import PyTorchObs, Schedule
+from sb3_contrib.crossq.batch_renorm import BatchRenorm1d
 
 # CAP the standard deviation of the actor
 LOG_STD_MAX = 2
@@ -88,13 +89,17 @@ class Actor(BasePolicy):
 
         # TODO: can we clean this up?
         if batch_norm:
+
+            # BN = nn.BatchNorm1d
+            BN = BatchRenorm1d
+
             # If batchnorm, then we want to add torch.nn.Batch_Norm layers before every linear layer
             tmp = []
             for layer in latent_pi_net:
                 if isinstance(layer, nn.Linear):
-                    tmp.append(nn.BatchNorm1d(layer.in_features, eps=0.001, momentum=0.01))
+                    tmp.append(BN(layer.in_features, eps=0.001, momentum=0.01))
                 tmp.append(layer)
-            tmp.append(nn.BatchNorm1d(net_arch[-1], eps=0.001, momentum=0.01))
+            tmp.append(BN(net_arch[-1], eps=0.001, momentum=0.01))
             latent_pi_net = tmp
 
         self.latent_pi = nn.Sequential(*latent_pi_net)
@@ -251,11 +256,15 @@ class CrossQCritic(BaseModel):
             
             # TODO: can we clean this up?
             if batch_norm:
+
+                # BN = nn.BatchNorm1d
+                BN = BatchRenorm1d
+
                 # If batchnorm, then we want to add torch.nn.Batch_Norm layers before every linear layer
                 tmp = []
                 for layer in q_net_list:
                     if isinstance(layer, nn.Linear):
-                        tmp.append(nn.BatchNorm1d(layer.in_features, eps=0.001, momentum=0.01))
+                        tmp.append(BN(layer.in_features, eps=0.001, momentum=0.01))
                     tmp.append(layer)
                 q_net_list = tmp
 
