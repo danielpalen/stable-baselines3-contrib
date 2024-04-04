@@ -31,4 +31,5 @@ echo "Working Directory:  $(pwd)"
 
 python /home/palenicek/projects/stable-baselines3-contrib/run.py \
     -env $ENV \
+    algo $ALGO \
     -seed $SLURM_ARRAY_TASK_ID
