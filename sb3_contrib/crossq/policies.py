@@ -91,8 +91,8 @@ class Actor(BasePolicy):
         if batch_norm:
 
             # BN = nn.BatchNorm1d
-            # BN = BatchRenorm1d
-            BN = CrossNorm
+            BN = BatchRenorm1d
+            # BN = CrossNorm
 
             # If batchnorm, then we want to add torch.nn.Batch_Norm layers before every linear layer
             tmp = []
@@ -259,8 +259,8 @@ class CrossQCritic(BaseModel):
             if batch_norm:
 
                 # BN = nn.BatchNorm1d
-                # BN = BatchRenorm1d
-                BN = CrossNorm
+                BN = BatchRenorm1d
+                # BN = CrossNorm
 
                 # If batchnorm, then we want to add torch.nn.Batch_Norm layers before every linear layer
                 tmp = []

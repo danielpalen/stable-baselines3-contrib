@@ -28,7 +28,7 @@ with wandb.init(
     project='sb3-contrib-crossq',
     name=f"seed={seed}",
     # group=f"{env}_BN_fix",
-    group=f"{env}_{args.algo}_lr=1e-3_CrossNorm",
+    group=f"{env}_{args.algo}_lr=1e-3_BRN_fixed",
     tags=[],
     sync_tensorboard=True,
     # config=args_dict,

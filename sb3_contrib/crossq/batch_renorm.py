@@ -41,7 +41,8 @@ class CrossNorm(nn.Module):
         self.running_mean.data.zero_()
         self.bias.data.zero_()
         self.running_var.data.fill_(1.)
-        self.weight.data.uniform_(0, 1.) # as pytorch does it
+        self.weight.data.fill_(1.)
+        # self.weight.data.uniform_(0, 1.) # as pytorch does it
 
     def set_mode(self, mode, r_max=1, d_max=0):
         self.mode = mode
@@ -62,7 +63,7 @@ class CrossNorm(nn.Module):
                 var = torch.var(inp, 0)
                 self.running_var = (1 - self.momentum) * self.running_var + self.momentum * var.data
                 std = (var + self.eps).sqrt()
-                running_std = (self.running_var * self.correction + 1e-6).sqrt()
+                running_std = (self.running_var * self.correction + self.eps).sqrt()
 
             r = 1
             d = 0
@@ -88,7 +89,7 @@ class CrossNorm(nn.Module):
             avg = self.running_mean
             if self.scaling:
                 var = self.running_var
-                output = (inp - avg) / (var * self.correction + 1e-6).sqrt()
+                output = (inp - avg) / (var * self.correction + self.eps).sqrt()
             else:
                 output = inp - avg
 
@@ -176,7 +177,8 @@ class BatchRenorm(torch.jit.ScriptModule):
                 (batch_mean.detach() - self.running_mean.view_as(batch_mean))
                 / self.running_std.view_as(batch_std)
             ).clamp_(-self.dmax, self.dmax)
-            x = (x - batch_mean) / batch_std * r + d
+
+            # x = (x - batch_mean) / batch_std * r + d
             self.running_mean += self.momentum * (
                 batch_mean.detach() - self.running_mean
             )
@@ -184,6 +186,13 @@ class BatchRenorm(torch.jit.ScriptModule):
                 batch_std.detach() - self.running_std
             )
             self.num_batches_tracked += 1
+
+            if self.num_batches_tracked > 100_000:
+                s = self.batch_std / r
+                m = self.batch_mean - d * self.batch_std / r
+                x = (x - m) / (s + self.eps)
+            else:
+                x = (x - batch_mean) / batch_std
         else:
             x = (x - self.running_mean) / self.running_std
         if self.affine:
