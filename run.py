@@ -63,5 +63,5 @@ with wandb.init(
             verbose=1,
         ),
     ])
-    model.learn(total_timesteps=1_000_000, log_interval=4, callback=callback_list)
+    model.learn(total_timesteps=4_000_000, log_interval=4, callback=callback_list)
     # model.save("crossq_walker")
