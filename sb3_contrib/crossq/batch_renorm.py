@@ -6,6 +6,106 @@ import torch
 __all__ = ["BatchRenorm1d", "BatchRenorm2d", "BatchRenorm3d"]
 
 
+import torch
+import torch.nn as nn
+
+class CrossNorm(nn.Module):
+    def __init__(self, num_features, alpha=.5, beta=.5, scaling=True, eps: float = 1e-3, momentum=0.01):
+        super(CrossNorm, self).__init__()
+        self.num_features = num_features
+        self.momentum = momentum
+        self.mode = 'batchnorm'
+
+        self.eps = eps
+
+        self.alpha = alpha
+        self.beta = beta
+
+        self.scaling = scaling
+
+        self.r_max = 3
+        self.d_max = 5
+        self.correction = 1
+        
+        self.bias = nn.Parameter(torch.Tensor(num_features))
+        self.weight = nn.Parameter(torch.Tensor(num_features))
+
+        self.register_buffer('running_mean', torch.zeros(num_features))
+        self.register_buffer('running_var', torch.zeros(num_features))
+        self.register_buffer(
+            "num_batches_tracked", torch.tensor(0, dtype=torch.long)
+        )
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        self.running_mean.data.zero_()
+        self.bias.data.zero_()
+        self.running_var.data.fill_(1.)
+        self.weight.data.uniform_(0, 1.) # as pytorch does it
+
+    def set_mode(self, mode, r_max=1, d_max=0):
+        self.mode = mode
+        self.r_max = r_max
+        self.d_max = d_max
+
+    def forward(self, inp):
+        if self.training:
+            bs = int(inp.size(0)/2)
+            phi = inp[:bs]
+            phi_ = inp[bs:]
+
+            
+            avg = (torch.mean(phi,0) * self.alpha + torch.mean(phi_, 0) * self.beta)
+            self.running_mean = (1 - self.momentum) * self.running_mean + self.momentum * avg.data
+            if self.scaling:
+                self.correction = 1
+                var = torch.var(inp, 0)
+                self.running_var = (1 - self.momentum) * self.running_var + self.momentum * var.data
+                std = (var + self.eps).sqrt()
+                running_std = (self.running_var * self.correction + 1e-6).sqrt()
+
+            r = 1
+            d = 0
+            # if self.mode == 'renorm':
+            if self.num_batches_tracked > 100_000:
+                if self.scaling:
+                    r = (std / running_std).detach()
+                    r = torch.clamp(r, 1/self.r_max, self.r_max)
+                    d = ((avg - self.running_mean) / running_std ).detach()
+                else:
+                    d = (avg - self.running_mean).detach()
+
+                d = torch.clamp(d, -self.d_max, self.d_max)
+
+            if self.scaling:
+                output = ((inp - avg) / std) * r + d
+            else:
+                output = inp - avg + d
+
+            self.num_batches_tracked += 1
+
+        else:
+            avg = self.running_mean
+            if self.scaling:
+                var = self.running_var
+                output = (inp - avg) / (var * self.correction + 1e-6).sqrt()
+            else:
+                output = inp - avg
+
+
+        if self.scaling:
+            output = output * self.weight + self.bias
+        else:
+            output = output + self.bias
+
+        return output
+
+    def switch_to_renorm(self, momentum=0.01):
+        self.momentum = momentum
+        self.set_mode('renorm', 3, 5)
+
+
+
 class BatchRenorm(torch.jit.ScriptModule):
     def __init__(
         self,

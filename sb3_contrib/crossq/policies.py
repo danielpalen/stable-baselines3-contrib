@@ -16,7 +16,7 @@ from stable_baselines3.common.torch_layers import (
     get_actor_critic_arch,
 )
 from stable_baselines3.common.type_aliases import PyTorchObs, Schedule
-from sb3_contrib.crossq.batch_renorm import BatchRenorm1d
+from sb3_contrib.crossq.batch_renorm import BatchRenorm1d, CrossNorm
 
 # CAP the standard deviation of the actor
 LOG_STD_MAX = 2
@@ -91,7 +91,8 @@ class Actor(BasePolicy):
         if batch_norm:
 
             # BN = nn.BatchNorm1d
-            BN = BatchRenorm1d
+            # BN = BatchRenorm1d
+            BN = CrossNorm
 
             # If batchnorm, then we want to add torch.nn.Batch_Norm layers before every linear layer
             tmp = []
@@ -258,7 +259,8 @@ class CrossQCritic(BaseModel):
             if batch_norm:
 
                 # BN = nn.BatchNorm1d
-                BN = BatchRenorm1d
+                # BN = BatchRenorm1d
+                BN = CrossNorm
 
                 # If batchnorm, then we want to add torch.nn.Batch_Norm layers before every linear layer
                 tmp = []
