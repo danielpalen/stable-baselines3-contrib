@@ -188,8 +188,8 @@ class BatchRenorm(torch.jit.ScriptModule):
             self.num_batches_tracked += 1
 
             if self.num_batches_tracked > 100_000:
-                s = self.batch_std / r
-                m = self.batch_mean - d * self.batch_std / r
+                s = batch_std / r
+                m = batch_mean - d * batch_std / r
                 x = (x - m) / (s + self.eps)
             else:
                 x = (x - batch_mean) / batch_std
