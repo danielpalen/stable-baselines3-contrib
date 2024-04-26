@@ -28,7 +28,7 @@ with wandb.init(
     project='sb3-contrib-crossq',
     name=f"seed={seed}",
     # group=f"{env}_BN_fix",
-    group=f"{env}_{args.algo}_lr=1e-3_BRN_fixed",
+    group=f"{env}_{args.algo}_lr=3e-4_BRN_fixed",
     tags=[],
     sync_tensorboard=True,
     # config=args_dict,
@@ -47,7 +47,8 @@ with wandb.init(
         "MlpPolicy", 
         env, 
         learning_starts=5_000,
-        learning_rate=1e-3,
+        # learning_rate=1e-3,
+        learning_rate=3e-4,
         seed=seed,
         tensorboard_log=f"logs/{env}",
         verbose=1

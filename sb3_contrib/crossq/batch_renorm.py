@@ -140,16 +140,12 @@ class BatchRenorm(torch.jit.ScriptModule):
         raise NotImplementedError()  # pragma: no cover
 
     @property
-    def rmax(self) -> torch.Tensor:
-        return (2 / 35000 * self.num_batches_tracked + 25 / 35).clamp_(
-            1.0, 3.0
-        )
+    def rmax(self):
+        return 3.0
 
     @property
-    def dmax(self) -> torch.Tensor:
-        return (5 / 20000 * self.num_batches_tracked - 25 / 20).clamp_(
-            0.0, 5.0
-        )
+    def dmax(self):
+        return 5.0
 
     def forward(self, x: torch.Tensor, mask = None) -> torch.Tensor:
         '''
