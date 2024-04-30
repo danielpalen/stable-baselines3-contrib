@@ -119,8 +119,11 @@ class BatchRenorm(torch.jit.ScriptModule):
         self.register_buffer(
             "running_mean", torch.zeros(num_features, dtype=torch.float)
         )
+        # self.register_buffer(
+        #     "running_std", torch.ones(num_features, dtype=torch.float)
+        # )
         self.register_buffer(
-            "running_std", torch.ones(num_features, dtype=torch.float)
+            "running_var", torch.ones(num_features, dtype=torch.float)
         )
         self.register_buffer(
             "num_batches_tracked", torch.tensor(0, dtype=torch.long)
@@ -147,54 +150,51 @@ class BatchRenorm(torch.jit.ScriptModule):
     def dmax(self):
         return 5.0
 
-    def forward(self, x: torch.Tensor, mask = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         '''
         Mask is a boolean tensor used for indexing, where True values are padded
         i.e for 3D input, mask should be of shape (batch_size, seq_len)
         mask is used to prevent padded values from affecting the batch statistics
         '''
-        self._check_input_dim(x)
-        if x.dim() > 2:
-            x = x.transpose(1, -1)
+        # self._check_input_dim(x)
+        # if x.dim() > 2:
+        #     x = x.transpose(1, -1)
+
         if self.training:
-            dims = [i for i in range(x.dim() - 1)]
-            if mask is not None:
-                z = x[~mask]
-                batch_mean = z.mean(0) 
-                batch_std = z.std(0, unbiased=False) + self.eps
-            else:
-                batch_mean = x.mean(dims)
-                batch_std = x.std(dims, unbiased=False) + self.eps
-
-            r = (
-                batch_std.detach() / self.running_std.view_as(batch_std)
-            ).clamp_(1 / self.rmax, self.rmax)
-            d = (
-                (batch_mean.detach() - self.running_mean.view_as(batch_mean))
-                / self.running_std.view_as(batch_std)
-            ).clamp_(-self.dmax, self.dmax)
-
-            # x = (x - batch_mean) / batch_std * r + d
-            self.running_mean += self.momentum * (
-                batch_mean.detach() - self.running_mean
-            )
-            self.running_std += self.momentum * (
-                batch_std.detach() - self.running_std
-            )
-            self.num_batches_tracked += 1
+            batch_mean, batch_var = x.mean(0),  x.var(0)
+            batch_std = (batch_var + self.eps).sqrt()
 
             if self.num_batches_tracked > 100_000:
-                s = batch_std / r
-                m = batch_mean - d * batch_std / r
-                x = (x - m) / (s + self.eps)
+
+                running_std = (self.running_var + self.eps).sqrt()
+                running_mean = self.running_mean
+
+                r = (batch_std / running_std).detach()
+                r = r.clamp(1 / self.rmax, self.rmax)
+                d = ((batch_mean - running_mean) / running_std).detach()
+                d = d.clamp(-self.dmax, self.dmax)
+
+                m = batch_mean - d * batch_var.sqrt() / r
+                v = batch_var / (r**2)
+            
             else:
-                x = (x - batch_mean) / batch_std
+                m, v = batch_mean, batch_var
+
+            # Update Statistics
+            self.running_mean += self.momentum * (batch_mean.detach() - self.running_mean)
+            self.running_var += self.momentum * (batch_var.detach() - self.running_var)
+            self.num_batches_tracked += 1
+        
         else:
-            x = (x - self.running_mean) / self.running_std
+            m, v = self.running_mean, self.running_var
+
+        # Normalize
+        x = (x - m[None]) / (v[None] + self.eps).sqrt()
+
+        # Learned De-normalization
         if self.affine:
             x = self.weight * x + self.bias
-        if x.dim() > 2:
-            x = x.transpose(1, -1)
+
         return x
 
 
