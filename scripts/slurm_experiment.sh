@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -J SB3-XQ
-#SBATCH -a 1-6
+#SBATCH -a 1-11
 #SBATCH -n 1
 #SBATCH -c 2
 #SBATCH --mem-per-cpu=7000
