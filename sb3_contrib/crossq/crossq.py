@@ -3,37 +3,25 @@ from typing import Any, ClassVar, Dict, List, Optional, Tuple, Type, TypeVar, Un
 import numpy as np
 import torch as th
 from gymnasium import spaces
-from torch.nn import functional as F
-
 from stable_baselines3.common.buffers import ReplayBuffer
 from stable_baselines3.common.noise import ActionNoise
 from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
 from stable_baselines3.common.policies import BasePolicy, ContinuousCritic
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import get_parameters_by_name, polyak_update
-# from stable_baselines3.sac.policies import Actor, CnnPolicy, MlpPolicy, MultiInputPolicy, SACPolicy
-from sb3_contrib.crossq.policies import Actor, MlpPolicy, CrossQPolicy
+from torch.nn import functional as F
+
+from sb3_contrib.crossq.policies import Actor, CrossQPolicy, MlpPolicy
 
 SelfCrossQ = TypeVar("SelfCrossQ", bound="CrossQ")
 
 
 class CrossQ(OffPolicyAlgorithm):
     """
-    CrossQ - 
+    Implementation of the CrossQ algorithm.
+    Paper: https://openreview.net/pdf?id=PczQtTsTIX
 
-    TODO: Add description
-    Off-Policy Maximum Entropy Deep Reinforcement Learning with a Stochastic Actor,
-    This implementation borrows code from original implementation (https://github.com/haarnoja/sac)
-    from OpenAI Spinning Up (https://github.com/openai/spinningup), from the softlearning repo
-    (https://github.com/rail-berkeley/softlearning/)
-    and from Stable Baselines (https://github.com/hill-a/stable-baselines)
-    Paper: https://arxiv.org/abs/1801.01290
-    Introduction to SAC: https://spinningup.openai.com/en/latest/algorithms/sac.html
-
-    Note: we use double q target and not value target as discussed
-    in https://github.com/hill-a/stable-baselines/issues/270
-
-    :param policy: The policy model to use (MlpPolicy, CnnPolicy, ...)
+    :param policy: The policy model to use (MlpPolicy)
     :param env: The environment to learn from (if registered in Gym, can be str)
     :param learning_rate: learning rate for adam optimizer,
         the same learning rate will be used for all networks (Q-Values, Actor and Value function)
@@ -41,7 +29,6 @@ class CrossQ(OffPolicyAlgorithm):
     :param buffer_size: size of the replay buffer
     :param learning_starts: how many steps of the model to collect transitions for before learning starts
     :param batch_size: Minibatch size for each gradient update
-    :param tau: the soft update coefficient ("Polyak update", between 0 and 1)
     :param gamma: the discount factor
     :param train_freq: Update the model every ``train_freq`` steps. Alternatively pass a tuple of frequency and unit
         like ``(5, "step")`` or ``(2, "episode")``.
@@ -59,8 +46,6 @@ class CrossQ(OffPolicyAlgorithm):
     :param ent_coef: Entropy regularization coefficient. (Equivalent to
         inverse of reward scale in the original SAC paper.)  Controlling exploration/exploitation trade-off.
         Set it to 'auto' to learn it automatically (and 'auto_0.1' for using 0.1 as initial value)
-    :param target_update_interval: update the target network every ``target_network_update_freq``
-        gradient steps.
     :param target_entropy: target entropy when learning ``ent_coef`` (``ent_coef = 'auto'``)
     :param use_sde: Whether to use generalized State Dependent Exploration (gSDE)
         instead of action noise exploration (default: False)
@@ -82,24 +67,19 @@ class CrossQ(OffPolicyAlgorithm):
 
     policy_aliases: ClassVar[Dict[str, Type[BasePolicy]]] = {
         "MlpPolicy": MlpPolicy,
-        # "CnnPolicy": CnnPolicy,
-        # "MultiInputPolicy": MultiInputPolicy,
     }
     policy: CrossQPolicy
     actor: Actor
     critic: ContinuousCritic
-    # critic_target: ContinuousCritic  # TODO: This can go completely
 
     def __init__(
         self,
         policy: Union[str, Type[CrossQPolicy]],
         env: Union[GymEnv, str],
-        # learning_rate: Union[float, Schedule] = 3e-4,
         learning_rate: Union[float, Schedule] = 1e-3,
         buffer_size: int = 1_000_000,  # 1e6
         learning_starts: int = 100,
         batch_size: int = 256,
-        tau: float = 1.,  # TODO:
         gamma: float = 0.99,
         train_freq: Union[int, Tuple[int, str]] = 1,
         gradient_steps: int = 1,
@@ -108,7 +88,6 @@ class CrossQ(OffPolicyAlgorithm):
         replay_buffer_kwargs: Optional[Dict[str, Any]] = None,
         optimize_memory_usage: bool = False,
         ent_coef: Union[str, float] = "auto",
-        target_update_interval: int = 1,
         target_entropy: Union[str, float] = "auto",
         use_sde: bool = False,
         sde_sample_freq: int = -1,
@@ -128,7 +107,7 @@ class CrossQ(OffPolicyAlgorithm):
             buffer_size,
             learning_starts,
             batch_size,
-            tau,
+            1.0,
             gamma,
             train_freq,
             gradient_steps,
@@ -154,7 +133,6 @@ class CrossQ(OffPolicyAlgorithm):
         # Entropy coefficient / Entropy temperature
         # Inverse of the reward scale
         self.ent_coef = ent_coef
-        self.target_update_interval = target_update_interval
         self.ent_coef_optimizer: Optional[th.optim.Adam] = None
 
         if _init_setup_model:
@@ -165,7 +143,6 @@ class CrossQ(OffPolicyAlgorithm):
         self._create_aliases()
         # Running mean and running var
         self.batch_norm_stats = get_parameters_by_name(self.critic, ["running_"])
-        # self.batch_norm_stats_target = get_parameters_by_name(self.critic_target, ["running_"])
         # Target entropy is used when learning the entropy coefficient
         if self.target_entropy == "auto":
             # automatically set target entropy if needed
@@ -198,7 +175,6 @@ class CrossQ(OffPolicyAlgorithm):
     def _create_aliases(self) -> None:
         self.actor = self.policy.actor
         self.critic = self.policy.critic
-        # self.critic_target = self.policy.critic_target
 
     def train(self, gradient_steps: int, batch_size: int = 64) -> None:
         # Switch to train mode (this affects batch norm / dropout)
@@ -222,12 +198,13 @@ class CrossQ(OffPolicyAlgorithm):
             if self.use_sde:
                 self.actor.reset_noise()
 
-            # with th.no_grad():
+            # Note, in the following lines we always need to make sure to set train/eval modes
+            # of actor and critic carefully. This is because of the BatchNorm layers in the networks
+            # which behave differently in train and eval modes.
             self.actor.set_training_mode(True)
             actions_pi, log_prob = self.actor.action_log_prob(replay_data.observations)
             log_prob = log_prob.reshape(-1, 1)
             self.actor.set_training_mode(False)
-            # actions, _ = self.actor.action_log_prob(replay_data.observations)
 
             ent_coef_loss = None
             if self.ent_coef_optimizer is not None and self.log_ent_coef is not None:
@@ -251,21 +228,33 @@ class CrossQ(OffPolicyAlgorithm):
 
             with th.no_grad():
                 # Select action according to policy
-                # actions, _ = self.actor.action_log_prob(replay_data.observations)
                 self.actor.set_training_mode(False)
                 next_actions, next_log_prob = self.actor.action_log_prob(replay_data.next_observations)
                 self.actor.set_training_mode(False)
 
-            # Joint forward pass
-            # TODO: dokumentation
+            # Joint forward pass of obs/next_obs and actions/next_state_actions to have only
+            # one forward pass with shape (n_critics, 2 * batch_size, 1).
+            #
+            # This has two reasons:
+            # 1. According to the paper obs/actions and next_obs/next_state_actions are differently
+            #    distributed which is the reason why "naively" applying Batch Normalization in SAC fails.
+            #    The batch statistics have to instead be calculated for the mixture distribution of obs/next_obs
+            #    and actions/next_state_actions. Otherwise, next_obs/next_state_actions are perceived as
+            #    out-of-distribution to the Batch Normalization layer, since running statistics are only polyak averaged
+            #    over from the live network and have never seen the next batch which is known to be unstable.
+            #    Without target networks, the joint forward pass is a simple solution to calculate
+            #    the joint batch statistics directly with a single forward pass.
+            #
+            # 2. From a computational perspective a single forward pass is simply more efficient than
+            #    two sequential forward passes.
             all_obs = th.cat([replay_data.observations, replay_data.next_observations], dim=0)
-            all_acts = th.cat([replay_data.actions, next_actions], dim=0)  # TODO: check the detach() here.
+            all_acts = th.cat([replay_data.actions, next_actions], dim=0)
 
             self.critic.set_training_mode(True)
             all_q_values = th.cat(self.critic(all_obs, all_acts), dim=1)
             self.critic.set_training_mode(False)
             current_q_values, next_q_values = th.split(all_q_values, batch_size, dim=0)
-            current_q_values = th.split(current_q_values, [1,1], dim=1)
+            current_q_values = th.split(current_q_values, [1, 1], dim=1)
 
             with th.no_grad():
                 # Compute the target Q value
@@ -288,36 +277,18 @@ class CrossQ(OffPolicyAlgorithm):
             self.critic.optimizer.step()
 
             # Compute actor loss
-            # Alternative: actor_loss = th.mean(log_prob - qf1_pi)
-            # Min over all critic networks
-            # self.actor.set_training_mode(True)
-            # self.critic.set_training_mode(False)
-            
-            # Action by the current actor for the sampled state
-            # TODO: shouldnt this be detached?
-            # self.actor.set_training_mode(True)
-            # actions_pi, log_prob = self.actor.action_log_prob(replay_data.observations)
-            # self.actor.set_training_mode(False)
-            log_prob = log_prob.reshape(-1, 1)
-
             self.critic.set_training_mode(False)
             q_values_pi = th.cat(self.critic(replay_data.observations, actions_pi), dim=1)
             self.critic.set_training_mode(False)
 
             min_qf_pi, _ = th.min(q_values_pi, dim=1, keepdim=True)
-            actor_loss = (ent_coef * log_prob - min_qf_pi).mean()
+            actor_loss = (ent_coef * log_prob.reshape(-1, 1) - min_qf_pi).mean()
             actor_losses.append(actor_loss.item())
 
             # Optimize the actor
             self.actor.optimizer.zero_grad()
             actor_loss.backward()
             self.actor.optimizer.step()
-
-            # # Update target networks
-            # if gradient_step % self.target_update_interval == 0:
-            #     polyak_update(self.critic.parameters(), self.critic_target.parameters(), self.tau)
-            #     # Copy running stats, see GH issue #996
-            #     polyak_update(self.batch_norm_stats, self.batch_norm_stats_target, 1.0)
 
         self._n_updates += gradient_steps
 
@@ -347,7 +318,7 @@ class CrossQ(OffPolicyAlgorithm):
         )
 
     def _excluded_save_params(self) -> List[str]:
-        return super()._excluded_save_params() + ["actor", "critic"]#, "critic_target"]  # noqa: RUF005
+        return super()._excluded_save_params() + ["actor", "critic"]
 
     def _get_torch_save_params(self) -> Tuple[List[str], List[str]]:
         state_dicts = ["policy", "actor.optimizer", "critic.optimizer"]

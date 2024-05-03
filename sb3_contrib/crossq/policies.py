@@ -16,7 +16,7 @@ from stable_baselines3.common.torch_layers import (
     get_actor_critic_arch,
 )
 from stable_baselines3.common.type_aliases import PyTorchObs, Schedule
-from sb3_contrib.crossq.batch_renorm import BatchRenorm1d, CrossNorm
+from sb3_contrib.common.network_layers import BatchRenorm1d
 
 # CAP the standard deviation of the actor
 LOG_STD_MAX = 2
@@ -25,7 +25,8 @@ LOG_STD_MIN = -20
 
 class Actor(BasePolicy):
     """
-    Actor network (policy) for SAC.
+    Actor network (policy) for CrossQ.
+    It contains BatchRenorm layers to stabilize and accelerate training.
 
     :param observation_space: Obervation space
     :param action_space: Action space
@@ -62,7 +63,7 @@ class Actor(BasePolicy):
         use_expln: bool = False,
         clip_mean: float = 2.0,
         normalize_images: bool = True,
-        batch_norm: bool = True, # TODO
+        batch_norm: bool = True,
     ):
         super().__init__(
             observation_space,
@@ -84,24 +85,17 @@ class Actor(BasePolicy):
         self.clip_mean = clip_mean
 
         action_dim = get_action_dim(self.action_space)
-        # TODO: needs BN
         latent_pi_net = create_mlp(features_dim, -1, net_arch, activation_fn)
 
-        # TODO: can we clean this up?
         if batch_norm:
-
-            # BN = nn.BatchNorm1d
-            BN = BatchRenorm1d
-            # BN = CrossNorm
-
             # If batchnorm, then we want to add torch.nn.Batch_Norm layers before every linear layer
-            tmp = []
+            net = []
             for layer in latent_pi_net:
                 if isinstance(layer, nn.Linear):
-                    tmp.append(BN(layer.in_features, eps=0.001, momentum=0.01))
-                tmp.append(layer)
-            tmp.append(BN(net_arch[-1], eps=0.001, momentum=0.01))
-            latent_pi_net = tmp
+                    net.append(BatchRenorm1d(layer.in_features, eps=0.001, momentum=0.01))
+                net.append(layer)
+            net.append(BatchRenorm1d(net_arch[-1], eps=0.001, momentum=0.01))
+            latent_pi_net = net
 
         self.latent_pi = nn.Sequential(*latent_pi_net)
         last_layer_dim = net_arch[-1] if len(net_arch) > 0 else features_dim
@@ -200,13 +194,8 @@ class Actor(BasePolicy):
 
 class CrossQCritic(BaseModel):
     """
-    Critic network(s) for DDPG/SAC/TD3.
-    It represents the action-state value function (Q-value function).
-    Compared to A2C/PPO critics, this one represents the Q-value
-    and takes the continuous action as input. It is concatenated with the state
-    and then fed to the network which outputs a single value: Q(s, a).
-    For more recent algorithms like SAC/TD3, multiple networks
-    are created to give different estimates.
+    Critic network(s) for CrossQ.
+    The differnce with standard critic networks used by SAC/TD3 is that it uses BatchRenorm layers.
 
     By default, it creates two critic networks used to reduce overestimation
     thanks to clipped Q-learning (cf TD3 paper).
@@ -238,7 +227,7 @@ class CrossQCritic(BaseModel):
         normalize_images: bool = True,
         n_critics: int = 2,
         share_features_extractor: bool = True,
-        batch_norm: bool = True, # TODO
+        batch_norm: bool = True,
     ):
         super().__init__(
             observation_space,
@@ -255,20 +244,14 @@ class CrossQCritic(BaseModel):
         for idx in range(n_critics):
             q_net_list = create_mlp(features_dim + action_dim, 1, net_arch, activation_fn)
             
-            # TODO: can we clean this up?
             if batch_norm:
-
-                # BN = nn.BatchNorm1d
-                BN = BatchRenorm1d
-                # BN = CrossNorm
-
                 # If batchnorm, then we want to add torch.nn.Batch_Norm layers before every linear layer
-                tmp = []
+                net = []
                 for layer in q_net_list:
                     if isinstance(layer, nn.Linear):
-                        tmp.append(BN(layer.in_features, eps=0.001, momentum=0.01))
-                    tmp.append(layer)
-                q_net_list = tmp
+                        net.append(BatchRenorm1d(layer.in_features, eps=0.001, momentum=0.01))
+                    net.append(layer)
+                q_net_list = net
 
             q_net = nn.Sequential(*q_net_list)
             self.add_module(f"qf{idx}", q_net)
@@ -282,22 +265,10 @@ class CrossQCritic(BaseModel):
         qvalue_input = th.cat([features, actions], dim=1)
         return tuple(q_net(qvalue_input) for q_net in self.q_networks)
 
-    def q1_forward(self, obs: th.Tensor, actions: th.Tensor) -> th.Tensor:
-        """
-        Only predict the Q-value using the first network.
-        This allows to reduce computation when all the estimates are not needed
-        (e.g. when updating the policy in TD3).
-        """
-        raise NotImplementedError("Not implemented yet")
-        with th.no_grad():
-            features = self.extract_features(obs, self.features_extractor)
-        return self.q_networks[0](th.cat([features, actions], dim=1))
 
-
-# TODO: inherit from SACPolicy instead?
 class CrossQPolicy(BasePolicy):
     """
-    Policy class (with both actor and critic) for SAC.
+    Policy class (with both actor and critic) for CrossQ.
 
     :param observation_space: Observation space
     :param action_space: Action space
@@ -326,7 +297,6 @@ class CrossQPolicy(BasePolicy):
 
     actor: Actor
     critic: CrossQCritic
-    # critic_target: CrossQCritic
 
     def __init__(
         self,
@@ -374,7 +344,7 @@ class CrossQPolicy(BasePolicy):
             "net_arch": actor_arch,
             "activation_fn": self.activation_fn,
             "normalize_images": normalize_images,
-            "batch_norm": True, # TODO:
+            "batch_norm": True,
         }
         self.actor_kwargs = self.net_args.copy()
 
@@ -391,7 +361,7 @@ class CrossQPolicy(BasePolicy):
                 "n_critics": n_critics,
                 "net_arch": critic_arch,
                 "share_features_extractor": share_features_extractor,
-                "batch_norm": True, # TODO:
+                "batch_norm": True,
             }
         )
 
@@ -418,18 +388,11 @@ class CrossQPolicy(BasePolicy):
             self.critic = self.make_critic(features_extractor=None)
             critic_parameters = list(self.critic.parameters())
 
-        # # Critic target should not share the features extractor with critic
-        # self.critic_target = self.make_critic(features_extractor=None)
-        # self.critic_target.load_state_dict(self.critic.state_dict())
-
         self.critic.optimizer = self.optimizer_class(
             critic_parameters,
             lr=lr_schedule(1),  # type: ignore[call-arg]
             **self.optimizer_kwargs,
         )
-
-        # # Target networks should always be in eval mode
-        # self.critic_target.set_training_mode(False)
 
     def _get_constructor_parameters(self) -> Dict[str, Any]:
         data = super()._get_constructor_parameters()
@@ -462,19 +425,16 @@ class CrossQPolicy(BasePolicy):
 
     def make_actor(self, features_extractor: Optional[BaseFeaturesExtractor] = None) -> Actor:
         actor_kwargs = self._update_features_extractor(self.actor_kwargs, features_extractor)
-        # TODO: add BN
         return Actor(**actor_kwargs).to(self.device)
 
     def make_critic(self, features_extractor: Optional[BaseFeaturesExtractor] = None) -> CrossQCritic:
         critic_kwargs = self._update_features_extractor(self.critic_kwargs, features_extractor)
-        # TODO: add BN
         return CrossQCritic(**critic_kwargs).to(self.device)
 
     def forward(self, obs: PyTorchObs, deterministic: bool = False) -> th.Tensor:
         return self._predict(obs, deterministic=deterministic)
 
     def _predict(self, observation: PyTorchObs, deterministic: bool = False) -> th.Tensor:
-        # TODO: eval mode?
         return self.actor(observation, deterministic)
 
     def set_training_mode(self, mode: bool) -> None:
@@ -491,135 +451,3 @@ class CrossQPolicy(BasePolicy):
 
 
 MlpPolicy = CrossQPolicy
-
-
-# class CnnPolicy(SACPolicy):
-#     """
-#     Policy class (with both actor and critic) for SAC.
-
-#     :param observation_space: Observation space
-#     :param action_space: Action space
-#     :param lr_schedule: Learning rate schedule (could be constant)
-#     :param net_arch: The specification of the policy and value networks.
-#     :param activation_fn: Activation function
-#     :param use_sde: Whether to use State Dependent Exploration or not
-#     :param log_std_init: Initial value for the log standard deviation
-#     :param use_expln: Use ``expln()`` function instead of ``exp()`` when using gSDE to ensure
-#         a positive standard deviation (cf paper). It allows to keep variance
-#         above zero and prevent it from growing too fast. In practice, ``exp()`` is usually enough.
-#     :param clip_mean: Clip the mean output when using gSDE to avoid numerical instability.
-#     :param features_extractor_class: Features extractor to use.
-#     :param normalize_images: Whether to normalize images or not,
-#          dividing by 255.0 (True by default)
-#     :param optimizer_class: The optimizer to use,
-#         ``th.optim.Adam`` by default
-#     :param optimizer_kwargs: Additional keyword arguments,
-#         excluding the learning rate, to pass to the optimizer
-#     :param n_critics: Number of critic networks to create.
-#     :param share_features_extractor: Whether to share or not the features extractor
-#         between the actor and the critic (this saves computation time)
-#     """
-
-#     def __init__(
-#         self,
-#         observation_space: spaces.Space,
-#         action_space: spaces.Box,
-#         lr_schedule: Schedule,
-#         net_arch: Optional[Union[List[int], Dict[str, List[int]]]] = None,
-#         activation_fn: Type[nn.Module] = nn.ReLU,
-#         use_sde: bool = False,
-#         log_std_init: float = -3,
-#         use_expln: bool = False,
-#         clip_mean: float = 2.0,
-#         features_extractor_class: Type[BaseFeaturesExtractor] = NatureCNN,
-#         features_extractor_kwargs: Optional[Dict[str, Any]] = None,
-#         normalize_images: bool = True,
-#         optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
-#         optimizer_kwargs: Optional[Dict[str, Any]] = None,
-#         n_critics: int = 2,
-#         share_features_extractor: bool = False,
-#     ):
-#         super().__init__(
-#             observation_space,
-#             action_space,
-#             lr_schedule,
-#             net_arch,
-#             activation_fn,
-#             use_sde,
-#             log_std_init,
-#             use_expln,
-#             clip_mean,
-#             features_extractor_class,
-#             features_extractor_kwargs,
-#             normalize_images,
-#             optimizer_class,
-#             optimizer_kwargs,
-#             n_critics,
-#             share_features_extractor,
-#         )
-
-
-# class MultiInputPolicy(SACPolicy):
-#     """
-#     Policy class (with both actor and critic) for SAC.
-
-#     :param observation_space: Observation space
-#     :param action_space: Action space
-#     :param lr_schedule: Learning rate schedule (could be constant)
-#     :param net_arch: The specification of the policy and value networks.
-#     :param activation_fn: Activation function
-#     :param use_sde: Whether to use State Dependent Exploration or not
-#     :param log_std_init: Initial value for the log standard deviation
-#     :param use_expln: Use ``expln()`` function instead of ``exp()`` when using gSDE to ensure
-#         a positive standard deviation (cf paper). It allows to keep variance
-#         above zero and prevent it from growing too fast. In practice, ``exp()`` is usually enough.
-#     :param clip_mean: Clip the mean output when using gSDE to avoid numerical instability.
-#     :param features_extractor_class: Features extractor to use.
-#     :param normalize_images: Whether to normalize images or not,
-#          dividing by 255.0 (True by default)
-#     :param optimizer_class: The optimizer to use,
-#         ``th.optim.Adam`` by default
-#     :param optimizer_kwargs: Additional keyword arguments,
-#         excluding the learning rate, to pass to the optimizer
-#     :param n_critics: Number of critic networks to create.
-#     :param share_features_extractor: Whether to share or not the features extractor
-#         between the actor and the critic (this saves computation time)
-#     """
-
-#     def __init__(
-#         self,
-#         observation_space: spaces.Space,
-#         action_space: spaces.Box,
-#         lr_schedule: Schedule,
-#         net_arch: Optional[Union[List[int], Dict[str, List[int]]]] = None,
-#         activation_fn: Type[nn.Module] = nn.ReLU,
-#         use_sde: bool = False,
-#         log_std_init: float = -3,
-#         use_expln: bool = False,
-#         clip_mean: float = 2.0,
-#         features_extractor_class: Type[BaseFeaturesExtractor] = CombinedExtractor,
-#         features_extractor_kwargs: Optional[Dict[str, Any]] = None,
-#         normalize_images: bool = True,
-#         optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
-#         optimizer_kwargs: Optional[Dict[str, Any]] = None,
-#         n_critics: int = 2,
-#         share_features_extractor: bool = False,
-#     ):
-#         super().__init__(
-#             observation_space,
-#             action_space,
-#             lr_schedule,
-#             net_arch,
-#             activation_fn,
-#             use_sde,
-#             log_std_init,
-#             use_expln,
-#             clip_mean,
-#             features_extractor_class,
-#             features_extractor_kwargs,
-#             normalize_images,
-#             optimizer_class,
-#             optimizer_kwargs,
-#             n_critics,
-#             share_features_extractor,
-#         )
