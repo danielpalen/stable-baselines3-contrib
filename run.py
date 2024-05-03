@@ -6,7 +6,7 @@ import gymnasium
 
 from stable_baselines3.common.callbacks import EvalCallback, CallbackList
 
-from sb3_contrib import CrossQ, SAC
+from sb3_contrib import CrossQ
 
 
 
@@ -41,7 +41,6 @@ with wandb.init(
     
     cls = {
         "CrossQ": CrossQ,
-        "SAC": SAC,
     }[args.algo]
 
     model = cls(
