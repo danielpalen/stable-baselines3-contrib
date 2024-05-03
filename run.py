@@ -29,7 +29,7 @@ with wandb.init(
     name=f"seed={seed}",
     # group=f"{env}_BN_fix",
     # group=f"{env}_{args.algo}_lr=3e-4_BRN_fixed",
-    group=f"{env}_{args.algo}_lr=1e-3_BRN_recoded_long",
+    group=f"{env}_{args.algo}_lr=1e-3_BRN_recoded_long_reprod",
     tags=[],
     sync_tensorboard=True,
     # config=args_dict,
@@ -66,4 +66,3 @@ with wandb.init(
         ),
     ])
     model.learn(total_timesteps=5_000_000, log_interval=4, callback=callback_list)
-    # model.save("crossq_walker")
