@@ -40,10 +40,10 @@ Can I use?
 Space         Action Observation
 ============= ====== ===========
 Discrete      ❌      ✔️
-Box           ✔️       ✔️
+Box           ✔️      ✔️
 MultiDiscrete ❌      ✔️
 MultiBinary   ❌      ✔️
-Dict          ❌     ✔️
+Dict          ❌      ✔️
 ============= ====== ===========
 
 
