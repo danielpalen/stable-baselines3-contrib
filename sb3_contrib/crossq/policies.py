@@ -62,6 +62,8 @@ class Actor(BasePolicy):
         clip_mean: float = 2.0,
         normalize_images: bool = True,
         batch_norm: bool = True,
+        batch_norm_momentum: float = 0.01,
+        batch_norm_eps: float = 0.001
     ):
         super().__init__(
             observation_space,
@@ -90,9 +92,9 @@ class Actor(BasePolicy):
             net: List[Union[nn.Module, BatchRenorm1d]] = []
             for layer in latent_pi_net:
                 if isinstance(layer, nn.Linear):
-                    net.append(BatchRenorm1d(layer.in_features, eps=0.001, momentum=0.01))
+                    net.append(BatchRenorm1d(layer.in_features, eps=batch_norm_eps, momentum=batch_norm_momentum))
                 net.append(layer)
-            net.append(BatchRenorm1d(net_arch[-1], eps=0.001, momentum=0.01))
+            net.append(BatchRenorm1d(net_arch[-1], eps=batch_norm_eps, momentum=batch_norm_momentum))
             latent_pi_net = net
 
         self.latent_pi = nn.Sequential(*latent_pi_net)
@@ -226,6 +228,8 @@ class CrossQCritic(BaseModel):
         n_critics: int = 2,
         share_features_extractor: bool = True,
         batch_norm: bool = True,
+        batch_norm_momentum: float = 0.01,
+        batch_norm_eps: float = 0.001
     ):
         super().__init__(
             observation_space,
@@ -247,7 +251,7 @@ class CrossQCritic(BaseModel):
                 net: List[Union[nn.Module, BatchRenorm1d]] = []
                 for layer in q_net_list:
                     if isinstance(layer, nn.Linear):
-                        net.append(BatchRenorm1d(layer.in_features, eps=0.001, momentum=0.01))
+                        net.append(BatchRenorm1d(layer.in_features, eps=batch_norm_eps, momentum=batch_norm_momentum))
                     net.append(layer)
                 q_net_list = net
 
@@ -327,7 +331,10 @@ class CrossQPolicy(BasePolicy):
         )
 
         if net_arch is None:
-            net_arch = {"pi": [256, 256], "qf": [2048, 2048]}
+            # While CrossQ already works with a [256,256] critic network,
+            # the authors found that a wider network significantly improves performance.
+            # We use a slightly smaller net for faster computation, [1024, 1024] instead of [2048, 2048] in the paper.
+            net_arch = {"pi": [256, 256], "qf": [1024, 1024]}
 
         actor_arch, critic_arch = get_actor_critic_arch(net_arch)
 
